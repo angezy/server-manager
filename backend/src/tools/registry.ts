@@ -1,1 +1,1 @@
-export { TOOL_REGISTRY, getToolDefinition, validateToolArgs } from '../../../shared/src/tooling.js';
+export { TOOL_REGISTRY, LLM_TOOL_DEFINITIONS, getToolDefinition, validateToolArgs } from '../../../shared/src/tooling.js';

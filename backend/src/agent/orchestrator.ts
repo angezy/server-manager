@@ -1,28 +1,25 @@
 import { randomUUID } from 'node:crypto';
 import { config } from '../config.js';
-import { json, now, type AppDatabase } from '../db/database.js';
-import { LLMProvider } from '../llm/provider.js';
-import { AgentPlanSchema, type HealthReport, type ToolName, type ToolResult } from '../../../shared/src/types.js';
-import { TOOL_REGISTRY } from '../tools/registry.js';
+import { now, type AppDatabase } from '../db/database.js';
+import { LLMProvider, type ChatMessage } from '../llm/provider.js';
+import { type HealthReport, type ToolName, type ToolResult } from '../../../shared/src/types.js';
 import { ToolRunner } from '../tools/runner.js';
-import { createConfirmation } from './confirmations.js';
-import { rejectPromptInjection } from '../../../shared/src/validation.js';
+import { AgentRuntime, type AgentRuntimeResult } from './runtime.js';
+import type { Confirmation } from './confirmations.js';
+
+export { AgentRuntime } from './runtime.js';
 
 type StreamEvent = { content: string; done: boolean; error?: string };
 export const streamEvents = new Map<string, StreamEvent>();
 
 export class Orchestrator {
-  constructor(private readonly db: AppDatabase, private readonly runner: ToolRunner, private readonly llm: LLMProvider) {}
+  private readonly runtime: AgentRuntime;
+  constructor(private readonly db: AppDatabase, private readonly runner: ToolRunner, private readonly llm: LLMProvider) { this.runtime = new AgentRuntime(db, runner, llm, { health: (userId, requestId) => this.health(userId, requestId), diagnose: (userId, requestId, prompt) => this.diagnose(userId, requestId, prompt) }); }
 
-  async chat(userId: string, prompt: string, requestId: string = randomUUID()): Promise<{ requestId: string; content: string; confirmation?: ReturnType<typeof createConfirmation>; tools: ToolResult[] }> {
-    const cleanPrompt = rejectPromptInjection(prompt).trim();
-    let response: { content: string; tools: ToolResult[]; confirmation?: ReturnType<typeof createConfirmation> };
-    if (/\b(is|how)\b.*\b(server|system)\b.*\b(healthy|health)\b|server health|health check/i.test(cleanPrompt)) response = await this.health(userId, requestId);
-    else if (/website|site|webpage|domain|down|502|503|nginx/i.test(cleanPrompt)) response = await this.diagnose(userId, requestId, cleanPrompt);
-    else response = await this.llmChat(userId, requestId, cleanPrompt);
-    streamEvents.set(requestId, { content: response.content, done: true });
-    setTimeout(() => streamEvents.delete(requestId), 60_000);
-    return { requestId, ...response, tools: response.tools };
+  async chat(userId: string, prompt: string, requestId: string = randomUUID(), conversationId?: string): Promise<{ requestId: string; content: string; confirmation?: Confirmation; tools: ToolResult[] }> {
+    const response: AgentRuntimeResult = await this.runtime.run({ userId, prompt, requestId, context: conversationContext(this.db, userId, conversationId, prompt) });
+    streamEvents.set(requestId, { content: response.content, done: true }); setTimeout(() => streamEvents.delete(requestId), 60_000);
+    return response;
   }
 
   private async run(userId: string, requestId: string, tool: ToolName, args: Record<string, unknown>): Promise<ToolResult> { return this.runner.run(userId, requestId, tool, args); }
@@ -43,7 +40,7 @@ export class Orchestrator {
     const diskText = String((dataOf(tools, 'disk.getUsage') as Record<string, unknown> | undefined)?.stdout ?? ''); const diskPercents = [...diskText.matchAll(/\s(\d+)%\s/g)].map((m) => Number(m[1])); const disk = Math.max(0, ...diskPercents);
     if (disk >= config.DISK_CRITICAL_PERCENT) criticalIssues.push(`Disk usage is ${disk}%`); else if (disk >= config.DISK_WARNING_PERCENT) warnings.push(`Disk usage is ${disk}%`);
     if (load1 > (load?.cpuCount ? numberValue(load.cpuCount) * config.LOAD_WARNING_MULTIPLIER : Infinity)) warnings.push(`Load average is ${load1}`);
-    const check = (tool: ToolName, label: string): void => { const r = tools.find((v) => v.tool === tool); const payload = r?.data as Record<string, unknown> | undefined; const text = `${payload?.stdout ?? ''} ${payload?.stderr ?? ''}`.toLowerCase(); if (!r?.ok || (payload?.exitCode !== undefined && payload.exitCode !== 0)) warnings.push(`${label} is unavailable or reported a non-zero status`); };
+    const check = (tool: ToolName, label: string): void => { const r = tools.find((v) => v.tool === tool); const payload = r?.data as Record<string, unknown> | undefined; const text = `${payload?.stdout ?? ''} ${payload?.stderr ?? ''}`.toLowerCase(); if (!r?.ok || (payload?.exitCode !== undefined && payload.exitCode !== 0) || text.includes('failed')) warnings.push(`${label} is unavailable or reported a non-zero status`); };
     check('docker.getStatus', 'Docker'); check('pm2.getStatus', 'PM2'); check('nginx.getStatus', 'Nginx'); check('nginx.testConfig', 'Nginx configuration');
     const failed = String((dataOf(tools, 'systemd.getFailedServices') as Record<string, unknown> | undefined)?.stdout ?? '').trim(); if (failed) warnings.push('Failed systemd services were reported');
     const criticalLogs = String((dataOf(tools, 'logs.getCritical') as Record<string, unknown> | undefined)?.stdout ?? '').trim(); if (criticalLogs) warnings.push('Recent critical system logs were found');
@@ -61,28 +58,14 @@ export class Orchestrator {
     const tools = await Promise.all(specs.map(([tool, args]) => this.run(userId, requestId, tool, args)));
     const site = dataOf(tools, 'http.checkWebsite') as Record<string, unknown> | undefined; const nginx = dataOf(tools, 'nginx.getStatus') as Record<string, unknown> | undefined; const nginxTest = dataOf(tools, 'nginx.testConfig') as Record<string, unknown> | undefined; const errors = dataOf(tools, 'logs.getApplicationErrors') as Record<string, unknown> | undefined;
     const httpStatus = numberValue(site?.status); const nginxDown = String(nginx?.stdout ?? '').trim() !== 'active'; const configBad = Number(nginxTest?.exitCode) !== 0; const diagnosis = httpStatus >= 500 ? `The configured domain ${domain} is returning HTTP ${httpStatus}.` : nginxDown ? `Nginx is not active for ${domain}.` : configBad ? `Nginx configuration validation failed while investigating ${domain}.` : site?.error ? `The local HTTP check could not reach ${domain}.` : `No single outage cause was proven for ${domain}; the collected evidence is inconclusive.`;
-    const exact = nginxDown ? 'systemctl start nginx' : configBad ? 'nginx -t, then review the reported configuration error' : httpStatus >= 500 ? 'Inspect the application process/container logs and restart only the affected allowlisted workload after confirmation' : 'No change recommended until the evidence is reviewed';
-    return { content: [`PROBLEM:`, diagnosis, '', 'EVIDENCE:', `- Domain: ${domain}`, `- HTTP: ${site?.status ?? site?.error ?? 'unknown'}${site?.latencyMs ? ` (${site.latencyMs}ms)` : ''}`, `- Nginx: ${nginx?.stdout ?? 'unknown'}`, `- Nginx config test: ${nginxTest?.exitCode === 0 ? 'passed' : 'failed'}`, `- Application errors: ${errors?.stdout ? 'present' : 'none returned'}`, `- Evidence collected at ${now()}`, '', 'RECOMMENDED FIX:', 'Review the evidence and apply the smallest allowlisted change only after confirmation.', '', 'EXACT ACTION:', exact, '', 'RISK:', nginxDown || configBad ? 'MEDIUM' : 'LOW', '', 'No action was performed automatically.'].join('\n'), tools };
-  }
-
-  private async llmChat(userId: string, requestId: string, prompt: string): Promise<{ content: string; tools: ToolResult[]; confirmation?: ReturnType<typeof createConfirmation> }> {
-    try {
-      const completion = await this.llm.complete([{ role: 'system', content: `You are a cautious Ubuntu infrastructure reasoning layer. Never emit shell commands. Return strict JSON only matching {kind:"answer"|"tool_plan",message:string,tools:[{tool:string,args:object,reason:string}],risk:"LOW"|"MEDIUM"|"HIGH"|"CRITICAL",requiresConfirmation:boolean}. Use only registered tools. Read-only investigation first. ${JSON.stringify(Object.values(TOOL_REGISTRY).map((t) => ({ name: t.name, description: t.description, risk: t.risk })))} ` }, { role: 'user', content: prompt }], requestId, true);
-      this.db.db.prepare('INSERT INTO provider_usage (id,provider,model,request_id,input_tokens,output_tokens,latency_ms,status,created_at) VALUES (?,?,?,?,?,?,?,?,?)').run(randomUUID(), config.LLM_PROVIDER, completion.model, requestId, completion.usage?.prompt_tokens ?? null, completion.usage?.completion_tokens ?? null, null, 'ok', now());
-      const parsed = AgentPlanSchema.parse(JSON.parse(stripJsonFence(completion.content)));
-      const tools: ToolResult[] = [];
-      for (const planned of parsed.tools.slice(0, config.LLM_MAX_AGENT_STEPS)) {
-        const definition = TOOL_REGISTRY[planned.tool]; if (definition.requiresConfirmation) { const confirmation = createConfirmation(this.db, userId, planned.tool, planned.args, planned.reason); return { content: `${parsed.message}\n\nConfirmation required before this action:\n- Tool: ${planned.tool}\n- Risk: ${definition.risk}\n- Impact: ${planned.reason}\n- Action hash: ${confirmation.actionHash}\n- Expires: ${confirmation.expiresAt}`, tools, confirmation }; }
-        tools.push(await this.run(userId, requestId, planned.tool, planned.args));
-      }
-      return { content: parsed.message + (tools.length ? `\n\nEvidence collected from ${tools.length} allowlisted tool(s).` : ''), tools };
-    } catch (error) { return { content: `The remote reasoning provider is unavailable or returned invalid data. Deterministic server tools remain available. Error category: ${error instanceof Error ? error.message : 'provider_error'}`, tools: [] }; }
+    const exact = nginxDown ? 'Inspect Nginx service state and restart only after confirmation' : configBad ? 'Review the reported Nginx configuration error' : httpStatus >= 500 ? 'Inspect the affected application logs and restart only the allowlisted workload after confirmation' : 'No change recommended until the evidence is reviewed';
+    return { content: ['PROBLEM:', diagnosis, '', 'EVIDENCE:', `- Domain: ${domain}`, `- HTTP: ${site?.status ?? site?.error ?? 'unknown'}${site?.latencyMs ? ` (${site.latencyMs}ms)` : ''}`, `- Nginx: ${nginx?.stdout ?? 'unknown'}`, `- Nginx config test: ${nginxTest?.exitCode === 0 ? 'passed' : 'failed'}`, `- Application errors: ${errors?.stdout ? 'present' : 'none returned'}`, `- Evidence collected at ${now()}`, '', 'RECOMMENDED FIX:', 'Review the evidence and apply the smallest allowlisted change only after confirmation.', '', 'EXACT ACTION:', exact, '', 'RISK:', nginxDown || configBad ? 'MEDIUM' : 'LOW', '', 'No action was performed automatically.'].join('\n'), tools };
   }
 }
 
-function stripJsonFence(text: string): string { return text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim(); }
+function conversationContext(db: AppDatabase, userId: string, conversationId: string | undefined, currentPrompt: string): ChatMessage[] { if (!conversationId) return []; const rows = db.db.prepare('SELECT role,content FROM messages WHERE conversation_id=? AND conversation_id IN (SELECT id FROM conversations WHERE user_id=?) ORDER BY created_at DESC LIMIT 21').all(conversationId, userId) as Array<{ role: string; content: string }>; if (rows[0]?.role === 'user' && rows[0].content === currentPrompt) rows.shift(); return rows.reverse().filter((row) => row.role === 'user' || row.role === 'assistant').map((row) => ({ role: row.role as 'user' | 'assistant', content: row.content })); }
 function dataOf(tools: ToolResult[], tool: ToolName): unknown { return tools.find((v) => v.tool === tool)?.data; }
 function numberValue(value: unknown): number { return typeof value === 'number' && Number.isFinite(value) ? value : 0; }
 function format(value: number): string { return Number.isFinite(value) ? value.toFixed(2).replace(/\.00$/, '') : 'unknown'; }
-function status(tools: ToolResult[], tool: ToolName): string { const r = tools.find((v) => v.tool === tool); return r?.ok ? 'OK' : 'UNAVAILABLE'; }
+function status(tools: ToolResult[], tool: ToolName): string { return tools.find((v) => v.tool === tool)?.ok ? 'OK' : 'UNAVAILABLE'; }
 function extractDomain(prompt: string): string | null { const match = prompt.match(/(?:https?:\/\/)?([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})(?:\/[\w./-]*)?/); return match?.[1]?.toLowerCase() ?? null; }

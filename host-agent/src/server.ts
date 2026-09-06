@@ -5,6 +5,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { execute } from './registry.js';
 
 loadDotEnv();
+if (process.env.NODE_ENV !== 'test' && typeof process.getuid === 'function' && process.getuid() === 0) throw new Error('Host Agent must run as the restricted server-manager user');
 const socketPath = process.env.HOST_AGENT_SOCKET ?? '/run/server-manager/agent.sock';
 const logDir = process.env.HOST_AGENT_LOG_DIR ?? './logs';
 const audit = async (event: string, fields: Record<string, unknown>): Promise<void> => { try { await mkdir(logDir, { recursive: true, mode: 0o750 }); const { appendFile } = await import('node:fs/promises'); await appendFile(`${logDir}/host-agent.jsonl`, JSON.stringify({ at: new Date().toISOString(), event, ...fields }) + '\n', { mode: 0o640 }); } catch { /* audit is best effort */ } };

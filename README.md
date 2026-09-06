@@ -4,11 +4,11 @@ Sentinel is a self-hosted, evidence-first Ubuntu infrastructure manager. It prov
 
 ## Architecture and security model
 
-React frontend → authenticated Express API → orchestrator → remote LLM (optional) → strict Zod plan → tool registry → risk/confirmation engine → Unix-socket Host Agent → fixed allowlisted operations.
+React frontend → authenticated Express API → AgentRuntime → remote OpenAI-compatible LLM (optional) ⇄ typed assistant/tool messages → Zod tool registry → risk/confirmation engine → Unix-socket Host Agent → fixed allowlisted operations.
 
 The web/API process is not root. The Host Agent runs as `server-manager`, validates the RPC request again, uses `execFile` with `shell:false`, sanitized environment, timeouts, bounded output, allowlisted paths and names, and structured JSON. The Docker deployment does not expose the Docker socket publicly. Secrets are read from environment variables, redacted in logs, and never returned to the frontend.
 
-Read-only health and diagnosis work without an LLM. Modification requests require a single-use, expiring action hash confirmation; controlled file restore creates a current-file backup and verifies the selected backup checksum first.
+Read-only health and explicit website diagnosis work without an LLM. General requests use a bounded multi-step tool loop. Modification requests require a single-use, expiring action hash confirmation; file changes create backups and can be rolled back through the recorded backup. See [docs/agent-tools.md](docs/agent-tools.md) for the tool protocol.
 
 ## Quick start (development)
 
@@ -69,10 +69,10 @@ See [docs/deployment.md](docs/deployment.md). Install Node.js 22 LTS, run `scrip
 
 ## Operations and troubleshooting
 
-Ask “Is my server healthy?” for CPU, RAM, swap, disk, load, Docker, PM2, Nginx, ports, failed services, critical logs, and evidence timestamps. Ask “Why is my website down?” with a domain for ordered investigation; if no domain is configured, Sentinel asks which one. It does not restart services or edit files automatically.
+Ask “Is my server healthy?” for CPU, RAM, swap, disk, load, Docker, PM2, Nginx, ports, failed services, critical logs, and evidence timestamps. Ask “Why is my website down?” with a domain for ordered investigation; if no domain is configured, Sentinel asks which one. Any Hiddify request uses the inventory/cleanup workflow, even if it mentions a website or Nginx. It does not restart services or edit files automatically.
 
 Logs are JSONL in `LOG_DIR`: `application.jsonl`, `ai.jsonl`, `tool.jsonl`, `security.jsonl`, and `audit.jsonl`. Rotate them with logrotate or your host logging policy, keep mode `0640`, and never ship `.env`. Backups belong under `/var/backups/server-manager/` with metadata and SHA-256 checksums.
 
 ## Limitations
 
-The base profile intentionally leaves Nginx content replacement disabled until a reviewed content-payload workflow is added; it supports validation, backup, reload, restore, and rollback. PM2/Docker/systemd actions require explicit allowlists in the Host Agent environment. Provider-specific tool-calling quirks remain provider-dependent; all returned plans are still validated by the local Zod schema and registry.
+The base profile intentionally limits file operations to narrow allowlisted roots; it supports validation, backup, reload, restore, rollback, and exact artifact deletion. PM2/Docker/systemd actions require explicit allowlists in the Host Agent environment. Provider-specific tool-calling quirks are handled by model fallback, retries, timeouts, and transport validation; the runtime does not parse model-authored plans.

@@ -4,6 +4,13 @@ export const RiskLevel = z.enum(['LOW', 'MEDIUM', 'HIGH', 'CRITICAL']);
 export type RiskLevel = z.infer<typeof RiskLevel>;
 
 export const ToolName = z.enum([
+  // Canonical agent tools. These are the only names advertised to the LLM.
+  'list_directory', 'search_files', 'read_file', 'git_status', 'git_diff',
+  'system_resources', 'listening_ports', 'systemd_status', 'journal_logs',
+  'docker_status', 'pm2_status', 'nginx_test', 'nginx_config_inventory', 'hiddify_inventory',
+  'write_file', 'delete_file', 'delete_directory', 'restart_service', 'reload_nginx',
+  'remove_docker_container', 'remove_systemd_unit', 'remove_hiddify_artifact',
+  // Legacy names are accepted at the RPC boundary for backwards compatibility.
   'system.getResources', 'system.getLoad', 'system.getUptime', 'disk.getUsage', 'memory.getUsage',
   'docker.getStatus', 'docker.getContainers', 'docker.getDiskUsage', 'pm2.getStatus', 'pm2.getLogs',
   'nginx.getStatus', 'nginx.testConfig', 'network.getListeningPorts', 'systemd.getFailedServices',
@@ -14,6 +21,15 @@ export const ToolName = z.enum([
   'systemd.restartAllowlistedService', 'config.restoreBackup', 'rollback.restore'
 ]);
 export type ToolName = z.infer<typeof ToolName>;
+
+export const CanonicalToolName = z.enum([
+  'list_directory', 'search_files', 'read_file', 'git_status', 'git_diff',
+  'system_resources', 'listening_ports', 'systemd_status', 'journal_logs',
+  'docker_status', 'pm2_status', 'nginx_test', 'nginx_config_inventory', 'hiddify_inventory',
+  'write_file', 'delete_file', 'delete_directory', 'restart_service', 'reload_nginx',
+  'remove_docker_container', 'remove_systemd_unit', 'remove_hiddify_artifact'
+]);
+export type CanonicalToolName = z.infer<typeof CanonicalToolName>;
 
 export const ToolRequestSchema = z.object({
   requestId: z.string().uuid(),
