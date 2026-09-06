@@ -73,6 +73,8 @@ Ask “Is my server healthy?” for CPU, RAM, swap, disk, load, Docker, PM2, Ngi
 
 Logs are JSONL in `LOG_DIR`: `application.jsonl`, `ai.jsonl`, `tool.jsonl`, `security.jsonl`, and `audit.jsonl`. Rotate them with logrotate or your host logging policy, keep mode `0640`, and never ship `.env`. Backups belong under `/var/backups/server-manager/` with metadata and SHA-256 checksums.
 
+For a controlled Node deployment, configure exact `DEPLOYMENT_PATH_ALLOWLIST` and `DEPLOYMENT_DOMAIN_ALLOWLIST` entries plus the PM2 process in `PM2_ALLOWLIST`. The agent can then accept a request such as “deploy `/var/www/vhosts/laon-demo` as `loan-demo` for `loan-demo.nickwebproject.com`,” ask for any missing port or Certbot email, show one exact confirmation, and execute the bounded PM2 → Nginx → validation/reload → Certbot workflow. It never accepts a user- or model-supplied shell command.
+
 ## Limitations
 
 The base profile intentionally limits file operations to narrow allowlisted roots; it supports validation, backup, reload, restore, rollback, and exact artifact deletion. PM2/Docker/systemd actions require explicit allowlists in the Host Agent environment. Provider-specific tool-calling quirks are handled by model fallback, retries, timeouts, and transport validation; the runtime does not parse model-authored plans.

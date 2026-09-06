@@ -1,6 +1,6 @@
 import { execFile as execFileCb } from 'node:child_process';
 import { promisify } from 'node:util';
-import { appendFile, cp, mkdir, readdir, readFile, realpath, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
+import { appendFile, cp, lstat, mkdir, readdir, readFile, realpath, rename, rm, stat, symlink, unlink, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import os from 'node:os';
 import tls from 'node:tls';
@@ -78,6 +78,7 @@ export async function execute(raw: unknown): Promise<ToolResult> {
       case 'delete_directory': return result(request.tool, startedAt, await deleteAllowlistedDirectory((args as z.infer<typeof ToolArgs.deleteDirectory>).path, request.operationId));
       case 'restart_service': return await restartService(request.tool, startedAt, (args as z.infer<typeof ToolArgs.restartService>).service, request.operationId);
       case 'reload_nginx': return await reloadNginx(request.tool, startedAt, request.operationId);
+      case 'deploy_node_app': return await deployNodeApp(request.tool, startedAt, args as z.infer<typeof ToolArgs.deployNodeApp>, request.operationId);
       case 'remove_docker_container': return await removeDockerContainer(request.tool, startedAt, (args as z.infer<typeof ToolArgs.removeDockerContainer>).name, request.operationId);
       case 'remove_systemd_unit': return await removeSystemdUnit(request.tool, startedAt, (args as z.infer<typeof ToolArgs.removeSystemdUnit>).unit, request.operationId);
       case 'remove_hiddify_artifact': return await removeHiddifyArtifact(request.tool, startedAt, args as z.infer<typeof ToolArgs.removeHiddifyArtifact>, request.operationId);
@@ -151,6 +152,82 @@ async function deleteFileAtPath(path: string, operationId: string): Promise<unkn
 async function deleteDirectoryAtPath(path: string, operationId: string): Promise<unknown> { const info = await stat(path); if (!info.isDirectory()) throw new Error('Path is not a directory'); const backup = await createDirectoryBackup(path, operationId); await rm(path, { recursive: true, force: false }); return { deleted: path, backupPath: backup }; }
 async function restartService(tool: ToolName, startedAt: string, service: string, operationId: string): Promise<ToolResult> { assertServiceName(service); if (!allowedService(service)) throw new Error('Service is not allowlisted'); const backup = await backupOperation({ operationId, kind: 'service', service, before: await fixed('/usr/bin/systemctl', ['is-active', service]) }); return commandResult(tool, startedAt, await fixed('/usr/bin/systemctl', ['restart', service]), { backupPath: backup }); }
 async function reloadNginx(tool: ToolName, startedAt: string, operationId: string): Promise<ToolResult> { const validation = await fixed('/usr/sbin/nginx', ['-t']); if (validation.exitCode !== 0) return commandResult(tool, startedAt, validation, { phase: 'validation', reloaded: false }); const backup = await backupOperation({ operationId, kind: 'nginx_reload', before: await nginxInventory() }); return commandResult(tool, startedAt, await fixed('/usr/bin/systemctl', ['reload', 'nginx']), { phase: 'reload', backupPath: backup }); }
+async function deployNodeApp(tool: ToolName, startedAt: string, args: z.infer<typeof ToolArgs.deployNodeApp>, operationId: string): Promise<ToolResult> {
+  const appPath = await exactDeploymentDirectory(args.path);
+  if (!allowed(args.processName, 'PM2_ALLOWLIST')) throw new Error('PM2 process name is not allowlisted');
+  if (!allowed(args.domain, 'DEPLOYMENT_DOMAIN_ALLOWLIST')) throw new Error('Deployment domain is not allowlisted');
+
+  const packagePath = resolve(appPath, 'package.json');
+  const packageJson = JSON.parse((await readFile(packagePath, 'utf8')).replace(/^\uFEFF/, '')) as { scripts?: { start?: unknown } };
+  if (typeof packageJson.scripts?.start !== 'string' || !packageJson.scripts.start.trim()) throw new Error('Application package.json has no start script');
+  const sitePath = `/etc/nginx/sites-available/${args.domain}`;
+  const enabledPath = `/etc/nginx/sites-enabled/${args.domain}`;
+  await assertNewDeploymentPath(sitePath);
+  await assertNewDeploymentPath(enabledPath);
+
+  const inventory = await nginxInventory() as { serverNames?: string[] };
+  if ((inventory.serverNames ?? []).some((name) => name.toLowerCase() === args.domain.toLowerCase())) throw new Error('Deployment domain already exists in Nginx inventory');
+  const pm2Before = await fixed('/usr/bin/pm2', ['jlist']);
+  if (pm2Before.exitCode !== 0) throw new Error(pm2Before.stderr || 'PM2 status check failed');
+  if (pm2ProcessNames(pm2Before.stdout).includes(args.processName)) throw new Error('PM2 process name already exists');
+
+  const siteBackup = await createAbsenceBackup(sitePath, operationId);
+  const enabledBackup = await createAbsenceBackup(enabledPath, operationId);
+  const operationBackup = await backupOperation({ operationId, kind: 'node_deployment', appPath, processName: args.processName, domain: args.domain, port: args.port, sitePath, enabledPath, siteBackup, enabledBackup });
+  const siteContent = buildNginxSiteConfig(args.domain, args.port);
+  let processStarted = false;
+  let siteWritten = false;
+  let linkCreated = false;
+  try {
+    const started = await fixed('/usr/bin/pm2', ['start', 'npm', '--name', args.processName, '--cwd', appPath, '--', 'start'], 30000);
+    if (started.exitCode !== 0) throw new Error(started.stderr || 'PM2 start failed');
+    processStarted = true;
+    const afterStart = await fixed('/usr/bin/pm2', ['jlist']);
+    if (afterStart.exitCode !== 0 || !pm2ProcessNames(afterStart.stdout).includes(args.processName)) throw new Error('PM2 process was not present after start');
+
+    await writeNewFile(sitePath, siteContent);
+    siteWritten = true;
+    await symlink(sitePath, enabledPath);
+    linkCreated = true;
+
+    const validation = await fixed('/usr/sbin/nginx', ['-t']);
+    if (validation.exitCode !== 0) throw new Error(validation.stderr || 'Nginx configuration validation failed');
+    const reloaded = await fixed('/usr/bin/systemctl', ['reload', 'nginx']);
+    if (reloaded.exitCode !== 0) throw new Error(reloaded.stderr || 'Nginx reload failed');
+
+    const certbot = await fixed('/usr/bin/certbot', ['--nginx', '--non-interactive', '--agree-tos', '--email', args.certbotEmail, '--domain', args.domain, '--redirect'], 120000);
+    const data = { appPath, processName: args.processName, domain: args.domain, port: args.port, sitePath, enabledPath, operationBackup, siteBackup, enabledBackup, nginxValidated: true, nginxReloaded: true, certbot: commandData(certbot) };
+    if (certbot.exitCode !== 0) return result(tool, startedAt, { ...data, partial: true, note: 'The app and HTTP Nginx site are active; Certbot failed and needs review.' }, { category: 'certbot_failed', message: certbot.stderr || `Certbot exited with code ${certbot.exitCode}` }, certbot.exitCode);
+    return result(tool, startedAt, { ...data, certbotCompleted: true });
+  } catch (error) {
+    if (linkCreated) await unlink(enabledPath).catch(() => undefined);
+    if (siteWritten) await unlink(sitePath).catch(() => undefined);
+    if (processStarted) await fixed('/usr/bin/pm2', ['delete', args.processName], 30000);
+    return result(tool, startedAt, { appPath, processName: args.processName, domain: args.domain, port: args.port, operationBackup, siteBackup, enabledBackup, rolledBack: true }, { category: 'deployment_failed', message: error instanceof Error ? error.message : 'Deployment failed and was rolled back' });
+  }
+}
+
+export function buildNginxSiteConfig(domain: string, port: number): string {
+  return `server {\n    listen 80;\n    listen [::]:80;\n    server_name ${domain};\n\n    location / {\n        proxy_pass http://127.0.0.1:${port};\n        proxy_http_version 1.1;\n        proxy_set_header Host $host;\n        proxy_set_header X-Real-IP $remote_addr;\n        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n        proxy_set_header X-Forwarded-Proto $scheme;\n        proxy_read_timeout 300s;\n    }\n}\n`;
+}
+
+async function exactDeploymentDirectory(input: string): Promise<string> {
+  const normalized = resolve(input);
+  if (!envPaths('DEPLOYMENT_PATH_ALLOWLIST').some((path) => resolve(path) === normalized)) throw new Error('Deployment path is not allowlisted');
+  const actual = await realpath(normalized);
+  if (actual !== normalized || !(await stat(actual)).isDirectory()) throw new Error('Deployment path must be an exact real directory');
+  if (!(await existsFile(resolve(actual, 'package.json')))) throw new Error('Deployment directory must contain package.json');
+  return actual;
+}
+
+async function assertNewDeploymentPath(path: string): Promise<void> {
+  if (!NGINX_ROOTS.some((root) => resolve(path).startsWith(resolveRoot(root)))) throw new Error('Nginx deployment path is not allowlisted');
+  if (await existsEntry(path)) throw new Error('Nginx deployment target already exists');
+}
+
+async function existsEntry(path: string): Promise<boolean> { return lstat(path).then(() => true).catch(() => false); }
+async function writeNewFile(path: string, content: string): Promise<void> { const temp = `${path}.server-manager-${randomUUID()}.tmp`; try { await writeFile(temp, content, { mode: 0o640 }); await rename(temp, path); } catch (error) { await unlink(temp).catch(() => undefined); throw error; } }
+function pm2ProcessNames(stdout: string): string[] { try { const processes = JSON.parse(stdout) as Array<{ name?: unknown }>; return processes.map((item) => typeof item.name === 'string' ? item.name : '').filter(Boolean); } catch { return []; } }
 async function removeDockerContainer(tool: ToolName, startedAt: string, name: string, operationId: string): Promise<ToolResult> { if (!allowed(name, 'DOCKER_CONTAINER_ALLOWLIST')) throw new Error('Container is not allowlisted'); const inspect = await fixed('/usr/bin/docker', ['inspect', name]); if (inspect.exitCode !== 0) return commandResult(tool, startedAt, inspect, { phase: 'inspect', removed: false }); const backup = await backupOperation({ operationId, kind: 'docker_container', name, inspect: inspect.stdout }); return commandResult(tool, startedAt, await fixed('/usr/bin/docker', ['rm', name]), { backupPath: backup }); }
 async function removeSystemdUnit(tool: ToolName, startedAt: string, unit: string, operationId: string): Promise<ToolResult> { assertServiceName(unit); if (!allowedService(unit)) throw new Error('Systemd unit is not allowlisted'); const unitPath = await safeExistingPath(`/etc/systemd/system/${unit}`, ['/etc/systemd/system/'], false).catch(() => null); const fileBackup = unitPath ? await createBackup(unitPath, operationId) : undefined; const backup = await backupOperation({ operationId, kind: 'systemd_unit', unit, status: await fixed('/usr/bin/systemctl', ['status', unit, '--no-pager', '--plain']) }, fileBackup); const stopped = await fixed('/usr/bin/systemctl', ['disable', '--now', unit]); if (stopped.exitCode !== 0) return commandResult(tool, startedAt, stopped, { backupPath: backup, removed: false }); if (unitPath) await unlink(unitPath); const reloaded = await fixed('/usr/bin/systemctl', ['daemon-reload']); if (reloaded.exitCode !== 0 && unitPath && fileBackup) { await restoreBackupFile(fileBackup, unitPath).catch(() => undefined); await fixed('/usr/bin/systemctl', ['daemon-reload']); } return commandResult(tool, startedAt, reloaded, { backupPath: backup, removed: reloaded.exitCode === 0, rolledBack: reloaded.exitCode !== 0 && Boolean(fileBackup) }); }
 async function removeHiddifyArtifact(tool: ToolName, startedAt: string, args: z.infer<typeof ToolArgs.removeHiddifyArtifact>, operationId: string): Promise<ToolResult> {

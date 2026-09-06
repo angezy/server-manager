@@ -9,6 +9,7 @@ export const ToolName = z.enum([
   'system_resources', 'listening_ports', 'systemd_status', 'journal_logs',
   'docker_status', 'pm2_status', 'nginx_test', 'nginx_config_inventory', 'hiddify_inventory',
   'write_file', 'delete_file', 'delete_directory', 'restart_service', 'reload_nginx',
+  'deploy_node_app',
   'remove_docker_container', 'remove_systemd_unit', 'remove_hiddify_artifact',
   // Legacy names are accepted at the RPC boundary for backwards compatibility.
   'system.getResources', 'system.getLoad', 'system.getUptime', 'disk.getUsage', 'memory.getUsage',
@@ -27,6 +28,7 @@ export const CanonicalToolName = z.enum([
   'system_resources', 'listening_ports', 'systemd_status', 'journal_logs',
   'docker_status', 'pm2_status', 'nginx_test', 'nginx_config_inventory', 'hiddify_inventory',
   'write_file', 'delete_file', 'delete_directory', 'restart_service', 'reload_nginx',
+  'deploy_node_app',
   'remove_docker_container', 'remove_systemd_unit', 'remove_hiddify_artifact'
 ]);
 export type CanonicalToolName = z.infer<typeof CanonicalToolName>;
