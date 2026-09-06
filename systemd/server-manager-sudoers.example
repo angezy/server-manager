@@ -1,0 +1,5 @@
+# Install as /etc/sudoers.d/server-manager-agent and validate with visudo -cf.
+# Replace paths only with the exact paths installed on the target host.
+server-manager ALL=(root) NOPASSWD: /usr/bin/systemctl is-active docker, /usr/bin/systemctl is-active nginx, /usr/bin/systemctl --failed --no-legend --plain, /usr/bin/systemctl reload nginx, /usr/bin/systemctl restart nginx
+server-manager ALL=(root) NOPASSWD: /usr/sbin/nginx -t
+server-manager ALL=(root) NOPASSWD: /usr/bin/docker ps -a --format {{json .}}, /usr/bin/docker system df

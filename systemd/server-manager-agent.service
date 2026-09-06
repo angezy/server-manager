@@ -1,0 +1,22 @@
+[Unit]
+Description=Sentinel restricted Host Agent
+After=network.target
+
+[Service]
+Type=simple
+User=server-manager
+Group=server-manager
+WorkingDirectory=/opt/server-manager
+EnvironmentFile=-/opt/server-manager/.env
+ExecStart=/usr/bin/node /opt/server-manager/dist/host-agent/src/server.js
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/run/server-manager /var/log/server-manager /var/backups/server-manager
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

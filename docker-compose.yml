@@ -1,0 +1,22 @@
+services:
+  api:
+    build: { context: ., dockerfile: backend/Dockerfile }
+    env_file: .env
+    ports: ["${PORT:-3010}:${PORT:-3010}"]
+    volumes:
+      - server_manager_data:/app/data
+      - server_manager_logs:/app/logs
+      - /run/server-manager/agent.sock:/run/server-manager/agent.sock
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    depends_on: [frontend]
+  frontend:
+    build: { context: ., dockerfile: frontend/Dockerfile }
+    ports: ["8080:80"]
+    read_only: true
+    tmpfs: [/var/cache/nginx, /var/run]
+    security_opt: [no-new-privileges:true]
+volumes:
+  server_manager_data:
+  server_manager_logs:

@@ -1,0 +1,5 @@
+export type Message = { id: string; role: 'user' | 'assistant' | 'tool' | 'system'; content: string; metadata_json?: string; created_at?: string };
+export type Conversation = { id: string; title: string; created_at: string; updated_at: string };
+const jsonHeaders = { 'content-type': 'application/json' };
+function csrf(): string { return document.cookie.split('; ').find((v) => v.startsWith('server_manager_csrf='))?.split('=')[1] ?? ''; }
+export async function api<T>(path: string, options: RequestInit = {}): Promise<T> { const method = options.method ?? 'GET'; const headers = new Headers(options.headers); if (options.body) Object.entries(jsonHeaders).forEach(([k, v]) => headers.set(k, v)); if (method !== 'GET') headers.set('x-csrf-token', csrf()); const response = await fetch(`/api${path}`, { credentials: 'include', ...options, headers }); const data = await response.json().catch(() => ({})); if (!response.ok) throw new Error(data.error ?? `Request failed (${response.status})`); return data as T; }

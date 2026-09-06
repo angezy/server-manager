@@ -1,0 +1,22 @@
+[Unit]
+Description=Sentinel Ubuntu Server Manager API
+After=network.target server-manager-agent.service
+Requires=server-manager-agent.service
+
+[Service]
+Type=simple
+User=server-manager
+Group=server-manager
+WorkingDirectory=/opt/server-manager
+EnvironmentFile=-/opt/server-manager/.env
+ExecStart=/usr/bin/node /opt/server-manager/dist/backend/src/server.js
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/server-manager/data /opt/server-manager/logs /var/log/server-manager
+
+[Install]
+WantedBy=multi-user.target

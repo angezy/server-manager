@@ -1,0 +1,53 @@
+{
+  "name": "server-manager",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Self-hosted Ubuntu AI Server Manager with an allowlisted host agent.",
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "dev": "concurrently -k \"npm:dev:backend\" \"npm:dev:frontend\"",
+    "dev:backend": "tsx watch backend/src/server.ts",
+    "dev:frontend": "vite --config frontend/vite.config.ts",
+    "build": "npm run build:backend && npm run build:frontend && npm run build:agent",
+    "build:backend": "tsc -p backend/tsconfig.json",
+    "build:frontend": "vite build --config frontend/vite.config.ts",
+    "build:agent": "tsc -p host-agent/tsconfig.json",
+    "start": "node dist/backend/src/server.js",
+    "start:agent": "node dist/host-agent/src/server.js",
+    "migrate": "tsx backend/src/db/migrate.ts",
+    "create-admin": "tsx backend/src/auth/create-admin.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc -p backend/tsconfig.json --noEmit && tsc -p host-agent/tsconfig.json --noEmit && tsc -p frontend/tsconfig.json --noEmit",
+    "lint:security": "tsx scripts/security-scan.ts"
+  },
+  "dependencies": {
+    "argon2": "^0.41.1",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "express-rate-limit": "^7.5.0",
+    "helmet": "^8.0.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-markdown": "^9.0.1",
+    "remark-gfm": "^4.0.1",
+    "uuid": "^11.0.5",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/cookie-parser": "^1.4.8",
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.10.5",
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.1.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.7",
+    "vitest": "^2.1.8"
+  }
+}
