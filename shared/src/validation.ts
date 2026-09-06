@@ -7,6 +7,8 @@ const safePath = z.string().min(1).max(400)
 const safeSearchPattern = z.string().min(1).max(200).refine((value) => !/[\0\r\n]/.test(value), 'unsafe search pattern');
 const optionalPath = safePath.optional();
 const hiddifyKind = z.enum(['file', 'directory', 'service', 'container', 'volume', 'cron', 'nginx_reference']);
+const safeDomain = z.string().regex(/^(?=.{1,253}$)([a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,63}$/);
+const safeProcessName = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/);
 
 export const ToolArgs = {
   empty: z.object({}).strict(),
@@ -23,6 +25,13 @@ export const ToolArgs = {
   removeDockerContainer: z.object({ name: safeName }).strict(),
   removeSystemdUnit: z.object({ unit: safeName }).strict(),
   removeHiddifyArtifact: z.object({ kind: hiddifyKind.default('file'), path: z.string().min(1).max(400).refine((value) => !value.includes('..') && !value.includes('\0') && !/[\r\n]/.test(value), 'unsafe artifact identifier') }).strict(),
+  deployNodeApp: z.object({
+    path: safePath,
+    processName: safeProcessName,
+    domain: safeDomain,
+    port: z.number().int().min(1024).max(65535),
+    certbotEmail: z.string().email().max(254)
+  }).strict(),
   // Used by the compatibility tools and retained for existing clients.
   website: z.object({ url: z.string().url().max(2048), host: safeName.optional() }).strict(),
   domain: z.object({ domain: z.string().regex(/^(?=.{1,253}$)([a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,63}$/) }).strict(),

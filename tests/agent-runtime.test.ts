@@ -54,4 +54,14 @@ describe('AgentRuntime', () => {
     const restart = await runtime.run({ userId: user.id, prompt: 'Restart the API.' }); expect(restart.confirmation?.toolName).toBe('restart_service'); expect(runner.run).not.toHaveBeenCalled();
     const realRunner = new ToolRunner(db, new HostAgentClient()); await expect(realRunner.run(user.id, randomUUID(), 'delete_file', { path: '/etc/server-manager/allowlisted/example.conf' })).rejects.toThrow('CONFIRMATION_REQUIRED');
   });
+
+  it('prioritizes deployment intent and confirms the complete bounded deployment', async () => {
+    expect(classifyIntent('Deploy the Node app with PM2 and configure Nginx and Certbot.')).toBe('deployment');
+    file = join(tmpdir(), `sentinel-runtime-deploy-${randomUUID()}.sqlite`); db = new AppDatabase(file); const user = await createAdmin(db, 'runtime-deploy', 'a sufficiently long test password');
+    const calls = [{ id: 'deploy-1', type: 'function' as const, function: { name: 'deploy_node_app', arguments: JSON.stringify({ path: '/var/www/vhosts/laon-demo', processName: 'loan-demo', domain: 'loan-demo.nickwebproject.com', port: 3000, certbotEmail: 'ops@example.com' }) } }];
+    const provider = new ScriptedProvider([completion({ role: 'assistant', content: null, tool_calls: calls }, calls)]);
+    const runner = { run: vi.fn() } as unknown as ToolRunner; const runtime = new AgentRuntime(db, runner, provider);
+    const output = await runtime.run({ userId: user.id, prompt: 'Deploy /var/www/vhosts/laon-demo with PM2 as loan-demo, proxy loan-demo.nickwebproject.com, and run Certbot.' });
+    expect(output.confirmation?.toolName).toBe('deploy_node_app'); expect(output.confirmation?.impact).toContain('loan-demo.nickwebproject.com'); expect(runner.run).not.toHaveBeenCalled();
+  });
 });

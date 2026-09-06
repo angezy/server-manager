@@ -29,3 +29,15 @@ The API image is intentionally not given `/var/run/docker.sock`; it uses the nat
 ## Reverse proxy and TLS
 
 Copy `nginx/server-manager.conf.example` to `/etc/nginx/sites-available/server-manager`, set the real domain, link it into `sites-enabled`, run `sudo nginx -t`, reload only after confirmation, and use Certbot or an existing managed certificate. Health checks validate hostname/SAN, chain authorization, expiry, and latency where the target allows it.
+
+## Controlled Node deployment
+
+The `deploy_node_app` tool accepts only an exact application directory, PM2 name, domain, port, and Certbot email. Before using it, add the exact values to the Host Agent environment, for example:
+
+```dotenv
+DEPLOYMENT_PATH_ALLOWLIST=/var/www/vhosts/laon-demo
+DEPLOYMENT_DOMAIN_ALLOWLIST=loan-demo.nickwebproject.com
+PM2_ALLOWLIST=loan-demo
+```
+
+The request must include the application's local port and the email to register with Let's Encrypt. Sentinel shows one confirmation containing the exact path, PM2 name, domain, and port. The installed Host Agent service must have the minimum OS permissions for the fixed PM2, Nginx, symlink, and Certbot operations; these permissions are intentionally not granted by a shell wildcard.
